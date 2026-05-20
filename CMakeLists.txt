@@ -4,6 +4,20 @@ project(Cena3D)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# Baixa stb_image.h automaticamente se ainda nao existir
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/include/stb_image.h")
+  message(STATUS "Baixando stb_image.h...")
+  file(DOWNLOAD
+    "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h"
+    "${CMAKE_SOURCE_DIR}/include/stb_image.h"
+    STATUS DOWNLOAD_STATUS
+  )
+  list(GET DOWNLOAD_STATUS 0 DOWNLOAD_STATUS_CODE)
+  if(NOT DOWNLOAD_STATUS_CODE EQUAL 0)
+    message(WARNING "Falha ao baixar stb_image.h. Coloque o arquivo manualmente em include/")
+  endif()
+endif()
+
 include(FetchContent)
 
 FetchContent_Declare(

@@ -1,11 +1,17 @@
-/* Objeto 3D - Atividade Acadêmica Computação Gráfica - Módulo 3
+/* Objeto 3D - Atividade Acadêmica Computação Gráfica - Módulo 4
  * Júlia Oliveira
+ * Texturas: leitura de coord UV do OBJ, arquivo MTL e carregamento de textura.
+ *
+ * Diferença de design em relação ao Cubo.cpp:
+ *   - MTL e textura são carregados UMA VEZ em main() e compartilhados pelos 3 objetos.
+ *   - carregarOBJ() cuida apenas da geometria (sem acoplamento à textura).
+ *   - lerMTL() é uma função independente que extrai o nome do arquivo de textura.
  *
  * Controles:
- *   TAB       - alterna objeto selecionado: 0 -> 1 -> 2 -> 0 -> ...
- *   R         - ativa modo Girar   -> X/Y/Z rotacionam no eixo respectivo
- *   T         - ativa modo Transladar -> W/A/D/Seta↑↓←→ transladam
- *   S         - ativa modo Escalar -> +/- escala uniforme
+ *   TAB       - alterna objeto selecionado: 0 -> 1 -> 2 -> 0
+ *   R         - modo Girar    -> setas giram, X/Y/Z = eixo
+ *   T         - modo Transladar -> setas transladam
+ *   S         - modo Escalar  -> setas/+/- escalam
  *   ESC       - fecha a janela
  */
 
@@ -17,6 +23,9 @@
 
 using namespace std;
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
@@ -25,48 +34,53 @@ using namespace std;
 #include <glm/gtc/type_ptr.hpp>
 
 void key_callback(GLFWwindow* janela, int tecla, int scancode, int acao, int modo);
-GLuint carregarOBJ(const string& caminho, int& nVertices, glm::vec3 cor);
+GLuint carregarOBJ(const string& caminho, int& nVertices);
+string lerMTL(const string& caminhomtl);
+GLuint carregarTextura(const string& caminho);
 int inicializarShader();
 
 const GLuint LARGURA = 1000, ALTURA = 1000;
 
+// Vertex shader: posicao (location 0) e coordenada UV (location 1)
 const GLchar* fonteVertice =
     "#version 450\n"
     "layout (location = 0) in vec3 posicao;\n"
-    "layout (location = 1) in vec3 cor;\n"
+    "layout (location = 1) in vec2 coordUV;\n"
     "uniform mat4 model;\n"
-    "out vec4 corFinal;\n"
+    "out vec2 uvFragmento;\n"
     "void main()\n"
     "{\n"
     "    gl_Position = model * vec4(posicao, 1.0);\n"
-    "    corFinal = vec4(cor, 1.0);\n"
+    "    uvFragmento = coordUV;\n"
     "}\0";
 
+// Fragment shader: amostra a textura com as coordenadas UV interpoladas
 const GLchar* fonteFragmento =
     "#version 450\n"
-    "in vec4 corFinal;\n"
-    "out vec4 cor;\n"
+    "in vec2 uvFragmento;\n"
+    "out vec4 corSaida;\n"
+    "uniform sampler2D amostradorTextura;\n"
     "void main()\n"
     "{\n"
-    "    cor = corFinal;\n"
+    "    corSaida = texture(amostradorTextura, uvFragmento);\n"
     "}\n\0";
 
 struct Objeto {
     GLuint vao;
+    GLuint textura;
     int nVertices;
     glm::vec3 posicao;
     float escala;
     float anguloX, anguloY, anguloZ;
 
-    Objeto(GLuint v, int nv, glm::vec3 pos, float s = 0.25f)
-        : vao(v), nVertices(nv), posicao(pos), escala(s),
+    Objeto(GLuint v, GLuint tex, int nv, glm::vec3 pos, float s = 0.25f)
+        : vao(v), textura(tex), nVertices(nv), posicao(pos), escala(s),
           anguloX(0.0f), anguloY(0.0f), anguloZ(0.0f) {}
 };
 
 vector<Objeto> objetos;
 
-// Índice do objeto atualmente selecionado
-int modoAtivo = 0;
+int modoAtivo = 0;  // índice do objeto selecionado
 
 enum Modo { GIRAR, TRANSLADAR, ESCALAR };
 Modo modoTransformacao = TRANSLADAR;
@@ -85,7 +99,7 @@ int main()
 {
     glfwInit();
 
-    GLFWwindow* janela = glfwCreateWindow(LARGURA, ALTURA, "Objeto 3D", nullptr, nullptr);
+    GLFWwindow* janela = glfwCreateWindow(LARGURA, ALTURA, "Objeto 3D - Texturas", nullptr, nullptr);
     glfwMakeContextCurrent(janela);
     glfwSetKeyCallback(janela, key_callback);
 
@@ -104,25 +118,27 @@ int main()
     GLuint programaShader = inicializarShader();
     glUseProgram(programaShader);
     GLint locModelo = glGetUniformLocation(programaShader, "model");
+    glUniform1i(glGetUniformLocation(programaShader, "amostradorTextura"), 0);
 
     glEnable(GL_DEPTH_TEST);
 
-    // Três Suzannes em triângulo com cores laranja, turquesa e roxo
+    // Lê o MTL e carrega a textura uma única vez — todos os objetos compartilham
+    string nomeTextura = lerMTL("assets/Suzanne.mtl");
+    GLuint idTextura = carregarTextura(nomeTextura.empty() ? "" : "assets/" + nomeTextura);
+
+    // Carrega a geometria do OBJ e cria 3 instâncias em arranjo triangular
     int nv;
-    GLuint vao0 = carregarOBJ("assets/modelo.obj", nv, glm::vec3(1.0f, 0.55f, 0.0f));
-    objetos.push_back(Objeto(vao0, nv, glm::vec3(-0.45f, -0.3f, 0.0f), 0.2f));
+    GLuint vaoCompartilhado = carregarOBJ("assets/modelo.obj", nv);
 
-    GLuint vao1 = carregarOBJ("assets/modelo.obj", nv, glm::vec3(0.0f, 0.75f, 0.65f));
-    objetos.push_back(Objeto(vao1, nv, glm::vec3( 0.45f, -0.3f, 0.0f), 0.2f));
-
-    GLuint vao2 = carregarOBJ("assets/modelo.obj", nv, glm::vec3(0.55f, 0.0f, 0.8f));
-    objetos.push_back(Objeto(vao2, nv, glm::vec3( 0.00f,  0.5f, 0.0f), 0.2f));
-
-    if (vao0 == (GLuint)-1 || vao1 == (GLuint)-1 || vao2 == (GLuint)-1) {
-        cerr << "Falha ao carregar modelos OBJ." << endl;
+    if (vaoCompartilhado == (GLuint)-1) {
+        cerr << "Falha ao carregar modelo OBJ." << endl;
         glfwTerminate();
         return -1;
     }
+
+    objetos.push_back(Objeto(vaoCompartilhado, idTextura, nv, glm::vec3(-0.45f, -0.3f, 0.0f), 0.2f));
+    objetos.push_back(Objeto(vaoCompartilhado, idTextura, nv, glm::vec3( 0.45f, -0.3f, 0.0f), 0.2f));
+    objetos.push_back(Objeto(vaoCompartilhado, idTextura, nv, glm::vec3( 0.00f,  0.5f, 0.0f), 0.2f));
 
     while (!glfwWindowShouldClose(janela))
     {
@@ -132,16 +148,15 @@ int main()
         string nomeModo = (modoTransformacao == GIRAR)      ? "GIRAR"
                         : (modoTransformacao == TRANSLADAR) ? "TRANSLADAR"
                         :                                     "ESCALAR";
-        string dica = (modoTransformacao == GIRAR)      ? "  setas=girar XYZ=eixo"
-                    : (modoTransformacao == TRANSLADAR)  ? "  setas=mover"
-                    :                                      "  setas/+/-=escala";
-        string tituloJanela = "Objeto 3D | Julia Oliveira  |  [" + nomeObjeto + "]"
-                            + "  [" + nomeModo + "]"
-                            + "  |  R/T/S=modo  TAB=selecionar" + dica;
-        glfwSetWindowTitle(janela, tituloJanela.c_str());
+        glfwSetWindowTitle(janela,
+            ("Objeto 3D | Julia Oliveira  |  [" + nomeObjeto + "]  [" + nomeModo + "]"
+             + "  |  R/T/S=modo  TAB=selecionar").c_str());
 
         glClearColor(0.08f, 0.12f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, idTextura);
 
         for (int i = 0; i < (int)objetos.size(); i++)
         {
@@ -170,11 +185,9 @@ void key_callback(GLFWwindow* janela, int tecla, int scancode, int acao, int mod
     if (tecla == GLFW_KEY_ESCAPE && acao == GLFW_PRESS)
         glfwSetWindowShouldClose(janela, GL_TRUE);
 
-    // Ciclo: Objeto 0 -> 1 -> 2 -> 0 -> ...
     if (tecla == GLFW_KEY_TAB && acao == GLFW_PRESS)
         modoAtivo = (modoAtivo + 1) % (int)objetos.size();
 
-    // Alternar modo de transformação com R / T / S
     if (acao == GLFW_PRESS) {
         if (tecla == GLFW_KEY_R) modoTransformacao = GIRAR;
         if (tecla == GLFW_KEY_T) modoTransformacao = TRANSLADAR;
@@ -184,14 +197,10 @@ void key_callback(GLFWwindow* janela, int tecla, int scancode, int acao, int mod
     if (acao == GLFW_PRESS || acao == GLFW_REPEAT)
     {
         if (modoTransformacao == TRANSLADAR) {
-            if (tecla == GLFW_KEY_LEFT)
-                aplicarAoSelecionado([](Objeto& o){ o.posicao.x -= PASSO_TRANSLACAO; });
-            if (tecla == GLFW_KEY_RIGHT)
-                aplicarAoSelecionado([](Objeto& o){ o.posicao.x += PASSO_TRANSLACAO; });
-            if (tecla == GLFW_KEY_UP)
-                aplicarAoSelecionado([](Objeto& o){ o.posicao.y += PASSO_TRANSLACAO; });
-            if (tecla == GLFW_KEY_DOWN)
-                aplicarAoSelecionado([](Objeto& o){ o.posicao.y -= PASSO_TRANSLACAO; });
+            if (tecla == GLFW_KEY_LEFT)  aplicarAoSelecionado([](Objeto& o){ o.posicao.x -= PASSO_TRANSLACAO; });
+            if (tecla == GLFW_KEY_RIGHT) aplicarAoSelecionado([](Objeto& o){ o.posicao.x += PASSO_TRANSLACAO; });
+            if (tecla == GLFW_KEY_UP)    aplicarAoSelecionado([](Objeto& o){ o.posicao.y += PASSO_TRANSLACAO; });
+            if (tecla == GLFW_KEY_DOWN)  aplicarAoSelecionado([](Objeto& o){ o.posicao.y -= PASSO_TRANSLACAO; });
         }
 
         if (modoTransformacao == ESCALAR) {
@@ -205,20 +214,13 @@ void key_callback(GLFWwindow* janela, int tecla, int scancode, int acao, int mod
         }
 
         if (modoTransformacao == GIRAR) {
-            if (tecla == GLFW_KEY_LEFT)
-                aplicarAoSelecionado([](Objeto& o){ o.anguloY -= PASSO_ROTACAO; });
-            if (tecla == GLFW_KEY_RIGHT)
-                aplicarAoSelecionado([](Objeto& o){ o.anguloY += PASSO_ROTACAO; });
-            if (tecla == GLFW_KEY_UP)
-                aplicarAoSelecionado([](Objeto& o){ o.anguloX -= PASSO_ROTACAO; });
-            if (tecla == GLFW_KEY_DOWN)
-                aplicarAoSelecionado([](Objeto& o){ o.anguloX += PASSO_ROTACAO; });
-            if (tecla == GLFW_KEY_X)
-                aplicarAoSelecionado([](Objeto& o){ o.anguloX += PASSO_ROTACAO; });
-            if (tecla == GLFW_KEY_Y)
-                aplicarAoSelecionado([](Objeto& o){ o.anguloY += PASSO_ROTACAO; });
-            if (tecla == GLFW_KEY_Z)
-                aplicarAoSelecionado([](Objeto& o){ o.anguloZ += PASSO_ROTACAO; });
+            if (tecla == GLFW_KEY_LEFT)  aplicarAoSelecionado([](Objeto& o){ o.anguloY -= PASSO_ROTACAO; });
+            if (tecla == GLFW_KEY_RIGHT) aplicarAoSelecionado([](Objeto& o){ o.anguloY += PASSO_ROTACAO; });
+            if (tecla == GLFW_KEY_UP)    aplicarAoSelecionado([](Objeto& o){ o.anguloX -= PASSO_ROTACAO; });
+            if (tecla == GLFW_KEY_DOWN)  aplicarAoSelecionado([](Objeto& o){ o.anguloX += PASSO_ROTACAO; });
+            if (tecla == GLFW_KEY_X)     aplicarAoSelecionado([](Objeto& o){ o.anguloX += PASSO_ROTACAO; });
+            if (tecla == GLFW_KEY_Y)     aplicarAoSelecionado([](Objeto& o){ o.anguloY += PASSO_ROTACAO; });
+            if (tecla == GLFW_KEY_Z)     aplicarAoSelecionado([](Objeto& o){ o.anguloZ += PASSO_ROTACAO; });
         }
     }
 }
@@ -260,12 +262,75 @@ int inicializarShader()
     return programa;
 }
 
-GLuint carregarOBJ(const string& caminho, int& nVertices, glm::vec3 cor)
+// Lê arquivo MTL e retorna o nome do arquivo de textura difusa (linha map_Kd)
+string lerMTL(const string& caminhomtl)
+{
+    ifstream arq(caminhomtl);
+    if (!arq.is_open()) {
+        cerr << "Arquivo MTL nao encontrado: " << caminhomtl << endl;
+        return "";
+    }
+    string linha, nomeArquivo;
+    while (getline(arq, linha)) {
+        istringstream ss(linha);
+        string palavra;
+        ss >> palavra;
+        if (palavra == "map_Kd") {
+            ss >> nomeArquivo;
+            break;
+        }
+    }
+    return nomeArquivo;
+}
+
+// Carrega textura via stb_image; fallback: xadrez ciano/escuro se arquivo ausente
+GLuint carregarTextura(const string& caminho)
+{
+    GLuint idTex;
+    glGenTextures(1, &idTex);
+    glBindTexture(GL_TEXTURE_2D, idTex);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    stbi_set_flip_vertically_on_load(true);
+    int larg, alt, canais;
+    unsigned char* dados = stbi_load(caminho.c_str(), &larg, &alt, &canais, 0);
+
+    if (dados) {
+        GLenum formato = (canais == 4) ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_2D, 0, formato, larg, alt, 0, formato, GL_UNSIGNED_BYTE, dados);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        stbi_image_free(dados);
+        cout << "Textura carregada: " << caminho << " (" << larg << "x" << alt << ")" << endl;
+    } else {
+        // Xadrez ciano/escuro 8x8 como indicador visual de textura ausente
+        unsigned char pixels[8 * 8 * 3];
+        for (int i = 0; i < 8; i++)
+            for (int j = 0; j < 8; j++) {
+                int c = ((i / 4) + (j / 4)) % 2;
+                pixels[(i * 8 + j) * 3 + 0] = c ? 0   : 40;
+                pixels[(i * 8 + j) * 3 + 1] = c ? 210 : 40;
+                pixels[(i * 8 + j) * 3 + 2] = c ? 210 : 40;
+            }
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 8, 8, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        cerr << "Textura nao encontrada (" << caminho << "), usando xadrez." << endl;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return idTex;
+}
+
+// Carrega geometria do OBJ: buffer (x,y,z,s,t) por vértice — sem acoplamento à textura
+GLuint carregarOBJ(const string& caminho, int& nVertices)
 {
     vector<glm::vec3> vertices;
-    vector<glm::vec2> coordTex;
+    vector<glm::vec2> coordUV;
     vector<glm::vec3> normais;
-    vector<GLfloat> buffer;
+    vector<GLfloat>   buffer;
 
     ifstream arq(caminho);
     if (!arq.is_open()) {
@@ -286,7 +351,7 @@ GLuint carregarOBJ(const string& caminho, int& nVertices, glm::vec3 cor)
         } else if (palavra == "vt") {
             glm::vec2 vt;
             ss >> vt.s >> vt.t;
-            coordTex.push_back(vt);
+            coordUV.push_back(vt);
         } else if (palavra == "vn") {
             glm::vec3 vn;
             ss >> vn.x >> vn.y >> vn.z;
@@ -304,14 +369,21 @@ GLuint carregarOBJ(const string& caminho, int& nVertices, glm::vec3 cor)
                 buffer.push_back(vertices[vi].x);
                 buffer.push_back(vertices[vi].y);
                 buffer.push_back(vertices[vi].z);
-                buffer.push_back(cor.r);
-                buffer.push_back(cor.g);
-                buffer.push_back(cor.b);
+
+                // Coordenadas UV substituem a cor por vértice do módulo anterior
+                if (!coordUV.empty()) {
+                    buffer.push_back(coordUV[ti].s);
+                    buffer.push_back(coordUV[ti].t);
+                } else {
+                    buffer.push_back(0.0f);
+                    buffer.push_back(0.0f);
+                }
             }
         }
     }
     arq.close();
 
+    // Monta VBO e VAO — stride: 5 floats (x, y, z, s, t)
     GLuint vbo, vao;
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -320,15 +392,17 @@ GLuint carregarOBJ(const string& caminho, int& nVertices, glm::vec3 cor)
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
 
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (GLvoid*)0);
+    // Atributo 0: posição (x, y, z)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid*)0);
     glEnableVertexAttribArray(0);
 
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(GLfloat), (GLvoid*)(3 * sizeof(GLfloat)));
+    // Atributo 1: coordenada UV (s, t)
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid*)(3 * sizeof(GLfloat)));
     glEnableVertexAttribArray(1);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
-    nVertices = (int)(buffer.size() / 6);
+    nVertices = (int)(buffer.size() / 5);
     return vao;
 }
