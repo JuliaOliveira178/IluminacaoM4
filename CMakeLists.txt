@@ -39,7 +39,9 @@ include_directories(${CMAKE_SOURCE_DIR}/common)
 include_directories(${CMAKE_SOURCE_DIR}/include/glad)
 include_directories(${glm_SOURCE_DIR})
 
-add_compile_options(-Wno-pragmas)
+if(NOT MSVC)
+    add_compile_options(-Wno-pragmas)
+endif()
 
 if(WIN32)
     set(OPENGL_LIBS opengl32)
